@@ -1,0 +1,116 @@
+import com.bmuschko.gradle.docker.tasks.image.DockerBuildImage
+import com.bmuschko.gradle.docker.tasks.image.DockerPushImage
+
+import java.text.SimpleDateFormat
+
+buildscript {
+	ext {
+		springBootVersion = '2.0.3.RELEASE'
+	}
+	repositories {
+		mavenCentral()
+	}
+	dependencies {
+		classpath("org.springframework.boot:spring-boot-gradle-plugin:${springBootVersion}")
+		classpath("de.aaschmid:gradle-cpd-plugin:1.0")
+		classpath("com.bmuschko:gradle-docker-plugin:3.2.5")
+	}
+}
+
+plugins {
+	id "org.sonarqube" version "2.6.2"
+	id "com.bmuschko.docker-remote-api" version "3.2.8"
+	id "com.patdouble.awsecr" version "0.4.0"
+}
+
+apply plugin: 'java'
+apply plugin: 'eclipse'
+apply plugin: 'org.springframework.boot'
+apply plugin: 'io.spring.dependency-management'
+apply plugin: 'com.bmuschko.docker-remote-api'
+apply plugin: 'jdepend'
+
+group = 'com.example'
+archivesBaseName = 'demo'
+String dockerTag = System.env.BUILD_NUMBER ? buildTime() + '-' + gitSha() + '-' + System.env.BUILD_NUMBER : buildTime() + '-' + gitSha()
+version = dockerTag
+
+def gitSha() {
+	return 'git rev-parse --short HEAD'.execute().text.trim()
+}
+
+def buildTime() {
+	def df = new SimpleDateFormat("yyyyMMdd'T'HHmm")
+	df.setTimeZone(TimeZone.getTimeZone("GMT+7:00"))
+	return df.format(new Date())
+}
+
+repositories {
+	mavenCentral()
+	maven {
+		url 'https://repo.spring.io/libs-release'
+	}
+}
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+
+
+dependencies {
+	compile('org.springframework.boot:spring-boot-starter-web')
+	compileOnly('org.projectlombok:lombok')
+	testCompile('org.springframework.boot:spring-boot-starter-test')
+}
+
+String dockerRepo = '2260232287609.dkr.ecr.ap-southeast-1.amazonaws.com/demo'
+docker {
+	registryCredentials {
+		url = "https://${dockerRepo}"
+	}
+}
+
+task copyJavaAgent(type: Copy) {
+	from 'java-agent.zip'
+	into buildDir
+}
+
+task copyDockerfile(type: Copy) {
+	from 'Dockerfile'
+	into buildDir
+}
+
+task buildImage(type: DockerBuildImage) {
+	inputDir = buildDir
+	tag = "${dockerRepo}:${dockerTag}"
+}
+
+task pushImage(type: DockerPushImage) {
+	imageName = "${dockerRepo}:${dockerTag}"
+}
+
+task buildArtifact(type: Zip) {
+	String libsDir = "${buildDir}/libs"
+	File dockerFile = new File("Dockerrun.aws.json")
+
+	doFirst {
+		ant.replace(file: dockerFile.getName(), token: "<tag>", value: "${dockerTag}")
+		ant.replace(file: dockerFile.getName(), token: "<repository>", value: "${dockerRepo}")
+	}
+
+	from dockerFile
+	from (".ebextensions"){
+		into (".ebextensions")
+	}
+
+	destinationDir = file(libsDir)
+	archiveName = "${archivesBaseName}-${dockerTag}.zip"
+
+	doLast {
+		dockerFile.renameTo(new File(libsDir, dockerFile.getName()))
+	}
+}
+
+buildImage.dependsOn copyJavaAgent
+buildImage.dependsOn copyDockerfile
+pushImage.dependsOn buildImage
+buildArtifact.dependsOn pushImage

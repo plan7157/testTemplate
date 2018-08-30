@@ -1,0 +1,36 @@
+node {
+
+        stage('Clone') { // for display purposes
+            // Get some code from a GitHub repository
+            git credentialsId: 'test-template', url: 'https://github.com/plan7157/testTemplate.git'
+        }
+        stage('Build Project') {
+            sh '''
+             chmod +x gradlew
+             ./gradlew clean build
+            '''
+        }
+        stage('Build Docker Image') {
+            sh '''
+                chmod +x gradlew
+                ./gradlew buildArtifact
+               '''
+        }
+        stage('Upload Artifact') {
+            withAWS(region: 'ap-southeast-1') {
+                s3Upload(bucket: "tescolotus-service-template", includePathPattern: '*.zip', workingDir: 'build/libs/')
+                s3Upload(bucket: "tescolotus-service-template", includePathPattern: '*.jar', workingDir: 'build/libs/')
+            }
+        }
+        stage('Deploy Artifact') {
+            def files = findFiles(glob: '**/build/libs/*.zip')
+            def ARTIFACT_NAME = files[0].name
+            withAWS(region: 'ap-southeast-1') {
+                sh """\
+                     aws elasticbeanstalk create-application-version --region ap-southeast-1 --application-name test-template-1 --version-label $ARTIFACT_NAME --source-bundle S3Bucket=tescolotus-service-template,S3Key=$ARTIFACT_NAME
+                     aws elasticbeanstalk update-environment --region ap-southeast-1 --application-name test-template-1 --environment-name TestTemplate --version-label $ARTIFACT_NAME
+                 """
+            }
+        }
+
+}
